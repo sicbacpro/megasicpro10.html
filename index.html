@@ -2284,6 +2284,15 @@ textarea:focus{border-color:var(--green)!important;}
     <div id="gatilho-tq" style="padding:8px;"></div>
   </div>
 
+  <!-- GATILHO AO MINUTO -->
+  <div class="card" style="border-color:#3a1a3a;margin-bottom:10px;background:linear-gradient(135deg,#12081a,#0e0614);">
+    <div class="ch" style="border-color:#3a1a3a;">
+      <div class="ci" style="background:#150515;">⏱️</div>
+      <div><div class="ct" style="color:#e879f9;">Gatilho ao Minuto</div><div class="cs">O minuto exato do triplo influencia quão rápido vem a quadra?</div></div>
+    </div>
+    <div id="gatilho-minuto" style="padding:8px;"></div>
+  </div>
+
   <!-- SECA DE TRIPLO → QUADRA -->
   <div class="card" style="border-color:#1a3a1a;margin-bottom:10px;">
     <div class="ch" style="border-color:#1a3a1a;">
@@ -16479,6 +16488,7 @@ function renderHora(){
   safeRun(renderComparadorSemanas,'renderComparadorSemanas');
   safeRun(renderMapaRepeticao,'renderMapaRepeticao');
   safeRun(renderGatilhoTriploQuadra,'renderGatilhoTriploQuadra');
+  safeRun(renderGatilhoMinuto,'renderGatilhoMinuto');
   safeRun(renderSecaAntesQuadra,'renderSecaAntesQuadra');
   safeRun(renderCicloPorHora,'renderCicloPorHora');
   safeRun(renderContagemProvavel,'renderContagemProvavel');
@@ -18841,21 +18851,87 @@ function calcGatilhoTriploQuadra(janelaMin){
   janelaMin = janelaMin || 90;
   const quadrasComTs = _semDiasAtipicos(S.quadras.filter(function(q){return q.ts;}));
   const triplosComTs = _semDiasAtipicos(S.triplos.filter(function(t){return t.ts;})).sort(function(a,b){return a.ts-b.ts;});
-  let comGatilho=0; const gaps=[];
+  let comGatilho=0; const gaps=[]; const paresComMinuto=[];
   quadrasComTs.forEach(function(q){
-    let melhor=null;
+    let melhor=null, melhorTriplo=null;
     triplosComTs.forEach(function(t){
       if(t.ts<=q.ts){
         const diffMin=(q.ts-t.ts)/60000;
-        if(diffMin<=janelaMin && (melhor===null||diffMin<melhor)) melhor=diffMin;
+        if(diffMin<=janelaMin && (melhor===null||diffMin<melhor)){ melhor=diffMin; melhorTriplo=t; }
       }
     });
-    if(melhor!==null){ comGatilho++; gaps.push(melhor); }
+    if(melhor!==null){
+      comGatilho++; gaps.push(melhor);
+      if(melhorTriplo && melhorTriplo.hora){
+        paresComMinuto.push({ minutoTriplo: parseInt(melhorTriplo.hora.split(':')[1]), gap: melhor });
+      }
+    }
   });
   const total = quadrasComTs.length;
   const pct = total ? Math.round(comGatilho/total*100) : 0;
   const avgGap = gaps.length ? gaps.reduce(function(a,b){return a+b;},0)/gaps.length : null;
-  return {total, comGatilho, pct, avgGap, gaps, janelaMin};
+  return {total, comGatilho, pct, avgGap, gaps, janelaMin, paresComMinuto};
+}
+
+// ══════════════════════════════════════════════
+//  GATILHO AO MINUTO (o minuto do triplo influencia o gap ate a quadra?)
+// ══════════════════════════════════════════════
+function calcGatilhoPorMinuto(){
+  const g = calcGatilhoTriploQuadra(90);
+  if(!g.paresComMinuto.length) return null;
+
+  const buckets = [[0,9],[10,19],[20,29],[30,39],[40,49],[50,59]];
+  const porBucket = buckets.map(function(b){
+    const pares = g.paresComMinuto.filter(function(p){ return p.minutoTriplo>=b[0] && p.minutoTriplo<=b[1]; });
+    if(!pares.length) return { label:':'+pad(b[0])+'-:'+pad(b[1]), n:0, avgGap:null };
+    const avgGap = pares.reduce(function(a,p){return a+p.gap;},0)/pares.length;
+    return { label:':'+pad(b[0])+'-:'+pad(b[1]), n:pares.length, avgGap:avgGap };
+  });
+  return { porBucket:porBucket, mediaGeral:g.avgGap, totalPares:g.paresComMinuto.length };
+}
+
+function renderGatilhoMinuto(){
+  const el = document.getElementById('gatilho-minuto');
+  if(!el) return;
+  const r = calcGatilhoPorMinuto();
+  if(!r || r.totalPares<10){
+    el.innerHTML = '<div class="empty">Ainda com poucos pares triplo→quadra com hora registada para cruzar por minuto (mínimo 10). Tens '+(r?r.totalPares:0)+'.</div>';
+    return;
+  }
+
+  const comAmostra = r.porBucket.filter(function(b){ return b.n>=3; });
+  if(!comAmostra.length){
+    el.innerHTML = '<div class="empty">Ainda sem faixas de minuto com amostra suficiente (mínimo 3 casos cada).</div>';
+    return;
+  }
+  const maisRapida = comAmostra.reduce(function(a,b){ return b.avgGap<a.avgGap ? b : a; });
+  const maisLenta = comAmostra.reduce(function(a,b){ return b.avgGap>a.avgGap ? b : a; });
+
+  let html = '<div style="background:#0a0a14;border-radius:9px;padding:9px;font-size:0.5rem;color:var(--text);line-height:1.7;margin-bottom:8px;">';
+  html += '⏱️ Média geral: <b>'+Math.round(r.mediaGeral)+'min</b> até à quadra, baseado em '+r.totalPares+' casos.<br>';
+  html += '🚀 Triplo em <b style="color:var(--green);">'+maisRapida.label+'</b> costuma trazer quadra mais rápido: <b>'+Math.round(maisRapida.avgGap)+'min</b> em média ('+maisRapida.n+' casos).<br>';
+  if(maisLenta.label!==maisRapida.label){
+    html += '🐢 Triplo em <b style="color:#f97316;">'+maisLenta.label+'</b> é o mais lento: <b>'+Math.round(maisLenta.avgGap)+'min</b> em média ('+maisLenta.n+' casos).';
+  }
+  html += '</div>';
+
+  const maxGap = Math.max.apply(null, r.porBucket.map(function(b){return b.avgGap||0;}).concat([1]));
+  html += '<div style="display:flex;gap:4px;align-items:flex-end;height:60px;margin-bottom:4px;">'
+    +r.porBucket.map(function(b){
+      const h = b.n ? Math.max(6, Math.round((b.avgGap/maxGap)*54)) : 3;
+      const cor = b.n<3 ? 'var(--dim2)' : (b.avgGap<=r.mediaGeral ? 'var(--green)' : '#f97316');
+      return '<div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;height:100%;">'
+        +'<div style="font-size:0.36rem;color:var(--dim2);margin-bottom:2px;">'+(b.n?Math.round(b.avgGap)+'m':'—')+'</div>'
+        +'<div style="width:100%;height:'+h+'px;background:'+cor+';opacity:'+(b.n<3?'0.3':'0.8')+';border-radius:3px 3px 0 0;"></div>'
+        +'</div>';
+    }).join('')
+    +'</div>';
+  html += '<div style="display:flex;gap:4px;margin-bottom:6px;">'
+    +r.porBucket.map(function(b){ return '<div style="flex:1;text-align:center;font-size:0.36rem;color:var(--dim2);">'+b.label+'<br>n='+b.n+'</div>'; }).join('')
+    +'</div>';
+  html += '<div style="font-size:0.4rem;color:var(--dim2);">💡 Barras cinzentas = menos de 3 casos, pouco fiável ainda. Verde = mais rápido que a média geral, laranja = mais lento.</div>';
+
+  el.innerHTML = html;
 }
 
 // Verifica se, agora mesmo, estamos dentro da janela de um gatilho conhecido
