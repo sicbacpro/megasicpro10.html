@@ -1496,6 +1496,15 @@ textarea:focus{border-color:var(--green)!important;}
     </div>
   </div>
 
+  <!-- RECALCULAR INTERVALOS -->
+  <div class="card">
+    <div class="ch"><div class="ci" style="background:#0a1410;">🔧</div><div><div class="ct" style="color:var(--green);">Recalcular Intervalos</div><div class="cs">Corrige intervalos negativos do bug de virada de meia-noite</div></div></div>
+    <div style="padding:8px;">
+      <button class="btn btn-sm" style="background:#0a1410;border:1px solid #00e67644;color:var(--green);width:100%;" onclick="detetarIntervalosNegativos()">🔍 Procurar Intervalos Negativos</button>
+      <div id="intervalos-resultado" style="margin-top:8px;"></div>
+    </div>
+  </div>
+
   <!-- Limpar por categoria -->
   <div class="card">
     <div class="ch"><div class="ci" style="background:#1a0808;">🗑</div><div><div class="ct">Limpar Dados</div><div class="cs">Por categoria ou tudo de uma vez</div></div></div>
@@ -3279,6 +3288,19 @@ textarea:focus{border-color:var(--green)!important;}
     </div>
   </div>
 
+  <!-- Dia dos resultados a importar -->
+  <div class="card" id="sec-dia-import">
+    <div class="ch"><div class="ci" style="background:var(--gd2);">🗓</div><div><div class="ct">Dia dos resultados</div><div class="cs">A que dia pertencem os screenshots que vais importar?</div></div></div>
+    <div style="margin:0 8px 8px;">
+      <div style="display:flex;gap:6px;align-items:center;">
+        <button type="button" id="imp-dia-hoje" onclick="setDiaImport('hoje')" style="flex:1;padding:8px;border-radius:9px;border:1px solid var(--green);background:var(--green)22;color:var(--green);font-size:0.5rem;font-weight:700;cursor:pointer;">Hoje</button>
+        <button type="button" id="imp-dia-ontem" onclick="setDiaImport('ontem')" style="flex:1;padding:8px;border-radius:9px;border:1px solid var(--border);background:transparent;color:var(--dim2);font-size:0.5rem;font-weight:700;cursor:pointer;">Ontem</button>
+        <input type="date" id="imp-dia-custom" onchange="setDiaImport('custom')" style="flex:1;padding:7px 4px;border-radius:9px;border:1px solid var(--border);background:var(--card2);color:var(--text);font-size:0.48rem;">
+      </div>
+      <div id="imp-dia-aviso" style="font-size:0.42rem;color:var(--dim2);margin-top:4px;"></div>
+    </div>
+  </div>
+
   <!-- UPLOAD CARD -->
   <div class="card" id="sec-upload-ia">
     <div class="ch"><div class="ci" style="background:#0a1a10;">🖼</div><div><div class="ct">Carregar Imagem(ns)</div><div class="cs">Até 3 screenshots consecutivos do histórico</div></div></div>
@@ -3536,6 +3558,32 @@ let quickType = 'triplo';
 // ══════════════════════════════════════════════
 const pad = v => String(v).padStart(2,'0');
 const toMin = h => { const [a,b]=h.split(':').map(Number); return a*60+b; };
+// Calcula o intervalo em minutos entre duas horas "HH:MM", corrigindo a virada de
+// meia-noite (ex: anterior 23:50, atual 00:10 → sem isto dava -1420 em vez de 20).
+// Se o intervalo "cru" for muito negativo (mais de meio dia), assume-se rollover
+// e soma-se 24h. Intervalos negativos pequenos (dados fora de ordem) mantêm-se
+// como estavam, para não mascarar problemas reais de ordenação na importação.
+function calcIntervalMin(horaAtual, horaAnterior){
+  if(!horaAnterior) return null;
+  let iv = toMin(horaAtual) - toMin(horaAnterior);
+  if(iv < -720) iv += 1440;
+  return iv;
+}
+// Filtra duplicados de um lote de importação OCR antes de os inserir. Cobre dois
+// casos: (1) o mesmo resultado lido duas vezes dentro do próprio screenshot/lote,
+// e (2) o mesmo screenshot importado outra vez, repetindo os últimos resultados
+// já existentes no histórico. Usa hora+num (ou hora+dice, para duplos) como chave —
+// não usa datas porque o campo "hora" só tem HH:MM.
+function filtrarDuplicadosImport(lote, historicoExistente, chaveFn, janelaHistorico){
+  const vistos = new Set();
+  const recentes = new Set((historicoExistente||[]).slice(0, janelaHistorico||15).map(chaveFn));
+  return lote.filter(function(r){
+    const chave = chaveFn(r);
+    if(vistos.has(chave) || recentes.has(chave)) return false;
+    vistos.add(chave);
+    return true;
+  });
+}
 const fromMin = m => { const v=(m%1440+1440)%1440; return `${pad(Math.floor(v/60))}:${pad(v%60)}`; };
 const nowMin = () => { const n=new Date(); return n.getHours()*60+n.getMinutes(); };
 const fmtR = v => 'R$'+Math.abs(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -3934,6 +3982,14 @@ function switchMini(prefix, tab, btn){
 // ══════════════════════════════════════════════
 let triploDiaEscolhido = 'hoje'; // 'hoje' | 'ontem' | 'YYYY-MM-DD'
 let quadraDiaEscolhido = 'hoje';
+// Dia a que se referem os resultados vindos de OCR/import (screenshots lidos com
+// atraso). Sem isto, a importação assumia sempre "agora" como hora do evento,
+// misturando hora real do jogo com hora de digitação. Ainda sem seletor próprio
+// na UI — assume 'hoje' por omissão — mas já separa `ts` (hora do evento) de
+// `registadoEm` (quando foi mesmo digitado), que é o que a análise de padrões
+// horários precisa para não confundir os dois.
+let importDiaEscolhido = 'hoje';
+function setImportDia(dia){ importDiaEscolhido = dia || 'hoje'; }
 
 function formatDiaLabel(dia){
   if(!dia || dia==='hoje') return null;
@@ -3995,6 +4051,13 @@ function setDiaQuadra(tipo){
   if(tipo==='custom'){ quadraDiaEscolhido = customInp.value || 'hoje'; }
   else { quadraDiaEscolhido = tipo; if(customInp) customInp.value=''; }
   atualizarPillsDia('q', quadraDiaEscolhido, 'var(--gold)');
+}
+function setDiaImport(tipo){
+  const customInp = document.getElementById('imp-dia-custom');
+  if(tipo==='custom'){ importDiaEscolhido = customInp.value || 'hoje'; }
+  else { importDiaEscolhido = tipo; if(customInp) customInp.value=''; }
+  setImportDia(importDiaEscolhido);
+  atualizarPillsDia('imp', importDiaEscolhido, 'var(--green)');
 }
 
 // ══════════════════════════════════════════════
@@ -4329,7 +4392,7 @@ function addDuplo(){
   const r=classifyDice(vals);
   if(!r.pairs.length){ showToast('⚠ Nenhum par detetado!','red'); return; }
   const prev=S.duplos[0];
-  const interval=prev?toMin(hora)-toMin(prev.hora):null;
+  const interval=prev?calcIntervalMin(hora,prev.hora):null;
   S.duplos.unshift({hora,dice:vals,type:r.type,pairs:r.pairs,isDuplo:r.isDuplo||false,gn,interval,ts:Date.now()});
   save('duplos');
   ['d-d1','d-d2','d-d3','d-d4','d-gn'].forEach(id=>document.getElementById(id).value='');
@@ -5636,6 +5699,58 @@ function removerDuplicados(){
   );
 }
 
+// Recalcula o campo "interval" de um array já existente, com a correção de
+// virada de meia-noite. NÃO reordena o array — a única data que existe por
+// registo é a string "HH:MM" (sem dia), por isso reordenar globalmente por
+// hora misturaria dias diferentes. Cada item passa a guardar o intervalo até
+// ao item seguinte no array (mais antigo), como já era a convenção da app.
+function _recalcularIntervalosArr(arr){
+  let corrigidos = 0;
+  for(let i=0;i<arr.length-1;i++){
+    const novo = calcIntervalMin(arr[i].hora, arr[i+1].hora);
+    if(novo !== arr[i].interval) corrigidos++;
+    arr[i].interval = novo;
+  }
+  return corrigidos;
+}
+
+function detetarIntervalosNegativos(){
+  const el = document.getElementById('intervalos-resultado');
+  if(!el) return;
+  const catsNomes = {triplos:'Triplos 🟢', quadras:'Quadras 🟡', duplos:'Duplos 🟣'};
+  let totalNeg = 0;
+  const porCat = {};
+  Object.keys(catsNomes).forEach(function(cat){
+    const n = (S[cat]||[]).filter(function(e){ return typeof e.interval==='number' && e.interval<0; }).length;
+    porCat[cat]=n; totalNeg+=n;
+  });
+  if(totalNeg===0){
+    el.innerHTML = '<div class="empty" style="color:var(--green);">✅ Nenhum intervalo negativo encontrado.</div>';
+    return;
+  }
+  let html = '<div style="background:#0a0a14;border-radius:8px;padding:9px;font-size:0.5rem;color:var(--text);line-height:1.7;margin-bottom:8px;">';
+  html += '⚠️ Encontrados <b style="color:#f97316;">'+totalNeg+'</b> intervalos negativos (bug de virada de meia-noite — já corrigido para novos registos):<br>';
+  Object.keys(catsNomes).forEach(function(cat){ if(porCat[cat]) html += '· '+catsNomes[cat]+': <b>'+porCat[cat]+'</b><br>'; });
+  html += '</div>';
+  html += '<button class="btn btn-sm" style="background:#0a1a10;border:1px solid #00e67644;color:var(--green);width:100%;" onclick="aplicarRecalculoIntervalos()">🔧 Recalcular Intervalos Agora</button>';
+  el.innerHTML = html;
+}
+
+function aplicarRecalculoIntervalos(){
+  mostrarConfirmacao(
+    'Recalcular os intervalos de Triplos, Quadras e Duplos com a correção de virada de meia-noite? Isto não apaga nem move nenhum registo, só corrige o campo de intervalo.',
+    function(){
+      let total = 0;
+      ['triplos','quadras','duplos'].forEach(function(cat){
+        total += _recalcularIntervalosArr(S[cat]);
+        save(cat);
+      });
+      showToast('🔧 '+total+' intervalos recalculados!','green');
+      setTimeout(function(){ location.reload(); },600);
+    }
+  );
+}
+
 function clearCategoria(cat){
   const nomes={triplos:'Triplos 🟢',quadras:'Quadras 🟡',duplos:'Duplos 🟣',fin:'Finanças 💰'};
   mostrarConfirmacao(
@@ -6056,31 +6171,36 @@ function switchResultTab(id, btn){
 
 function importarTudo(){
   if(!importedResults) return;
-  const t=importedResults.triplos||[];
-  const q=importedResults.quadras||[];
-  const d=importedResults.duplos||[];
+  const tAll=importedResults.triplos||[];
+  const qAll=importedResults.quadras||[];
+  const dAll=importedResults.duplos||[];
+  const t = filtrarDuplicadosImport(tAll, S.triplos, r=>r.hora+'|'+r.num);
+  const q = filtrarDuplicadosImport(qAll, S.quadras, r=>r.hora+'|'+r.num);
+  const d = filtrarDuplicadosImport(dAll, S.duplos, r=>r.hora+'|'+(r.dados||[]).join(','));
+  const duplicadosIgnorados = (tAll.length-t.length)+(qAll.length-q.length)+(dAll.length-d.length);
 
   // Importar triplos
+  const registadoEm = Date.now();
   t.forEach(r=>{
     const prev=S.triplos[0];
-    const interval=prev?toMin(r.hora)-toMin(prev.hora):null;
-    S.triplos.unshift({hora:r.hora,num:r.num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:Date.now(),imported:true});
+    const interval=prev?calcIntervalMin(r.hora,prev.hora):null;
+    S.triplos.unshift({hora:r.hora,num:r.num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:calcTsParaDia(importDiaEscolhido,r.hora),registadoEm,imported:true});
   });
 
   // Importar quadras
   q.forEach(r=>{
     const prev=S.quadras[0];
-    const interval=prev?toMin(r.hora)-toMin(prev.hora):null;
-    S.quadras.unshift({hora:r.hora,num:r.num,ap:0,gn:0,interval,ts:Date.now(),imported:true});
+    const interval=prev?calcIntervalMin(r.hora,prev.hora):null;
+    S.quadras.unshift({hora:r.hora,num:r.num,ap:0,gn:0,interval,ts:calcTsParaDia(importDiaEscolhido,r.hora),registadoEm,imported:true});
   });
 
   // Importar duplos/pares
   d.forEach(r=>{
     const dados=r.dados||[];
     const prev=S.duplos[0];
-    const interval=prev?toMin(r.hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(r.hora,prev.hora):null;
     const pairs=[...new Set(dados.filter((v,i,a)=>a.filter(x=>x===v).length>=2))];
-    S.duplos.unshift({hora:r.hora,dice:dados,pairs,type:r.tipo||'PAR',interval,ts:Date.now(),imported:true});
+    S.duplos.unshift({hora:r.hora,dice:dados,pairs,type:r.tipo||'PAR',interval,ts:calcTsParaDia(importDiaEscolhido,r.hora),registadoEm,imported:true});
   });
 
   // Ordenar por hora
@@ -6090,7 +6210,7 @@ function importarTudo(){
 
   save('triplos'); save('quadras'); save('duplos');
   playQuadra();
-  showToast(`✅ ${t.length} triplos + ${q.length} quadras + ${d.length} duplos importados!`,'green');
+  showToast(`✅ ${t.length} triplos + ${q.length} quadras + ${d.length} duplos importados!`+(duplicadosIgnorados?` (${duplicadosIgnorados} duplicados ignorados)`:''),'green');
   clearResults(); clearImage();
   renderAll();
 }
@@ -6111,18 +6231,22 @@ function importarCoresOCR(seq){
 
 function importarTriplosEQuadras(){
   if(!importedResults) return;
-  const t=importedResults.triplos||[];
-  const q=importedResults.quadras||[];
+  const tAll=importedResults.triplos||[];
+  const qAll=importedResults.quadras||[];
+  const t = filtrarDuplicadosImport(tAll, S.triplos, r=>r.hora+'|'+r.num);
+  const q = filtrarDuplicadosImport(qAll, S.quadras, r=>r.hora+'|'+r.num);
+  const duplicadosIgnorados = (tAll.length-t.length)+(qAll.length-q.length);
 
+  const registadoEm2 = Date.now();
   t.forEach(r=>{
     const prev=S.triplos[0];
-    const interval=prev?toMin(r.hora)-toMin(prev.hora):null;
-    S.triplos.unshift({hora:r.hora,num:r.num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:Date.now(),imported:true});
+    const interval=prev?calcIntervalMin(r.hora,prev.hora):null;
+    S.triplos.unshift({hora:r.hora,num:r.num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:calcTsParaDia(importDiaEscolhido,r.hora),registadoEm:registadoEm2,imported:true});
   });
   q.forEach(r=>{
     const prev=S.quadras[0];
-    const interval=prev?toMin(r.hora)-toMin(prev.hora):null;
-    S.quadras.unshift({hora:r.hora,num:r.num,ap:0,gn:0,interval,ts:Date.now(),imported:true});
+    const interval=prev?calcIntervalMin(r.hora,prev.hora):null;
+    S.quadras.unshift({hora:r.hora,num:r.num,ap:0,gn:0,interval,ts:calcTsParaDia(importDiaEscolhido,r.hora),registadoEm:registadoEm2,imported:true});
   });
 
   S.triplos.sort((a,b)=>toMin(b.hora)-toMin(a.hora));
@@ -6130,23 +6254,25 @@ function importarTriplosEQuadras(){
 
   save('triplos'); save('quadras');
   playQuadra();
-  showToast(`✅ ${t.length} triplos + ${q.length} quadras importados!`,'green');
+  showToast(`✅ ${t.length} triplos + ${q.length} quadras importados!`+(duplicadosIgnorados?` (${duplicadosIgnorados} duplicados ignorados)`:''),'green');
   clearResults(); clearImage();
   renderAll();
 }
 
 function importarSoTriplos(){
   if(!importedResults) return;
-  const t=importedResults.triplos||[];
+  const tAll=importedResults.triplos||[];
+  const t = filtrarDuplicadosImport(tAll, S.triplos, r=>r.hora+'|'+r.num);
+  const duplicadosIgnorados = tAll.length-t.length;
   t.forEach(r=>{
     const prev=S.triplos[0];
-    const interval=prev?toMin(r.hora)-toMin(prev.hora):null;
-    S.triplos.unshift({hora:r.hora,num:r.num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:Date.now(),imported:true});
+    const interval=prev?calcIntervalMin(r.hora,prev.hora):null;
+    S.triplos.unshift({hora:r.hora,num:r.num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:calcTsParaDia(importDiaEscolhido,r.hora),registadoEm:Date.now(),imported:true});
   });
   S.triplos.sort((a,b)=>toMin(a.hora)-toMin(b.hora)>0?-1:1);
   save('triplos');
   playSuccess();
-  showToast(`✅ ${t.length} triplos importados!`,'green');
+  showToast(`✅ ${t.length} triplos importados!`+(duplicadosIgnorados?` (${duplicadosIgnorados} duplicados ignorados)`:''),'green');
   clearResults(); clearImage();
   renderAll();
   const triplosBtn=document.querySelector('.nav-tab');
@@ -6171,6 +6297,7 @@ function importCSVManual(){
   const lines = cleaned.split('\n').map(l=>l.trim()).filter(l=>l&&!l.startsWith('Tipo')&&!l.startsWith('#'));
   let ct=0, cq=0, cd=0, skip=0;
 
+  const registadoEmCsv = Date.now();
   lines.forEach(line=>{
     const parts = line.split(',').map(s=>s.trim());
     if(parts.length < 3){ skip++; return; }
@@ -6182,16 +6309,16 @@ function importCSVManual(){
       const num=parseInt(val)||1;
       if(num<1||num>6){ skip++; return; }
       const prev=S.triplos[0];
-      const interval=prev?toMin(hora)-toMin(prev.hora):null;
-      S.triplos.unshift({hora,num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:Date.now(),imported:true});
+      const interval=prev?calcIntervalMin(hora,prev.hora):null;
+      S.triplos.unshift({hora,num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:calcTsParaDia(importDiaEscolhido,hora),registadoEm:registadoEmCsv,imported:true});
       ct++;
 
     } else if(tipo==='QUADRA'||tipo==='QUAD'||tipo==='Q'||tipo==='4X'){
       const num=parseInt(val)||1;
       if(num<1||num>6){ skip++; return; }
       const prev=S.quadras[0];
-      const interval=prev?toMin(hora)-toMin(prev.hora):null;
-      S.quadras.unshift({hora,num,ap:0,gn:0,interval,ts:Date.now(),imported:true});
+      const interval=prev?calcIntervalMin(hora,prev.hora):null;
+      S.quadras.unshift({hora,num,ap:0,gn:0,interval,ts:calcTsParaDia(importDiaEscolhido,hora),registadoEm:registadoEmCsv,imported:true});
       cq++;
 
     } else if(tipo==='PAR'||tipo==='P'||tipo==='DD'||tipo==='DP'){
@@ -6205,12 +6332,12 @@ function importCSVManual(){
       if(!pairs.length){ skip++; return; }
       const isDuplo=pairs.length>=2;
       const prev=S.duplos[0];
-      const interval=prev?toMin(hora)-toMin(prev.hora):null;
+      const interval=prev?calcIntervalMin(hora,prev.hora):null;
       S.duplos.unshift({
         hora, dice, pairs,
         type: isDuplo?'DUPLO PAR':'PAR',
         isDuplo, gn:0, interval,
-        ts:Date.now(), imported:true
+        ts:calcTsParaDia(importDiaEscolhido,hora), registadoEm:registadoEmCsv, imported:true
       });
       cd++;
     } else {
@@ -8539,11 +8666,19 @@ function renderProximaHoraForte(){
       +minsQuentes.map(function(mq){ return '<b style="color:#e879f9;">:'+pad(mq.m)+'</b> ('+mq.n+'x)'; }).join('  ·  ')
       +'</div>'
     : '';
+  const amostraHtml = '<div style="font-size:0.4rem;color:var(--dim2);margin-top:2px;">📊 baseado em '+top.nDias+' dia(s) com registo nesta hora'
+    + (top.nDias<10?' — amostra ainda pequena, confia com cautela':'')
+    + '</div>';
+  const importadoHtml = top.pctImportado>=40
+    ? '<div style="font-size:0.4rem;color:#f97316;margin-top:2px;">⚠️ '+top.pctImportado+'% destes registos vieram de import/backlog — pode estar a inflacionar esta hora</div>'
+    : '';
   el.innerHTML = '<div style="text-align:center;padding:4px 0;">'
     +'<div style="font-family:var(--font-mono);font-size:1.3rem;font-weight:700;color:var(--orange);">'+pad(top.h)+'h</div>'
     +'<div style="font-size:0.46rem;color:var(--dim2);margin-bottom:4px;">'+(top.tipo==='diaria'?'hora diária':'ciclo de 2-3 dias')+'</div>'
     +'<div style="font-size:0.52rem;">'+emoji+' <span style="color:'+top.cor+';font-weight:700;">'+top.status+'</span></div>'
     +minsHtml
+    +amostraHtml
+    +importadoHtml
     +'</div>';
 }
 
@@ -12136,14 +12271,14 @@ function confirmQuick(num){
 
   if(quickType==='triplo'){
     const prev=S.triplos[0];
-    const interval=prev?toMin(hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(hora,prev.hora):null;
     S.triplos.unshift({hora,num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:Date.now()});
     save('triplos');
     playSuccess();
     showToast(`🟢 Triplo ${num} registado!`,'green');
   } else {
     const prev=S.quadras[0];
-    const interval=prev?toMin(hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(hora,prev.hora):null;
     S.quadras.unshift({hora,num,ap:0,gn:0,interval,ts:Date.now()});
     save('quadras');
     playQuadra();
@@ -13377,14 +13512,14 @@ function turboRegistar(num){
 
   if(turboTipo==='triplo'){
     const prev=S.triplos[0];
-    const interval=prev?toMin(hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(hora,prev.hora):null;
     S.triplos.unshift({hora,num,ap:0,gn:0,tipo:'TRIPLO',interval,ts:Date.now()});
     save('triplos');
     playSuccess();
     showToast(`🟢 T${num} às ${hora}!`,'green');
   } else if(turboTipo==='quadra'){
     const prev=S.quadras[0];
-    const interval=prev?toMin(hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(hora,prev.hora):null;
     S.quadras.unshift({hora,num,ap:0,gn:0,interval,ts:Date.now()});
     save('quadras');
     playQuadra();
@@ -13393,7 +13528,7 @@ function turboRegistar(num){
     // Duplo par simples — regista como par do número
     const dice=[num,num,Math.ceil(Math.random()*6),Math.ceil(Math.random()*6)];
     const prev=S.duplos[0];
-    const interval=prev?toMin(hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(hora,prev.hora):null;
     S.duplos.unshift({hora,dice,pairs:[num],type:'PAR',isDuplo:false,gn:0,interval,ts:Date.now()});
     save('duplos');
     playBeep(560,0.12);
@@ -16143,8 +16278,10 @@ function computarCiclosHora(){
     if(!e.hora || !e.ts) return;
     const h = parseInt(e.hora.split(':')[0]);
     const dk = _diaKey(e.ts);
-    if(!porHora[h]) porHora[h] = new Set();
-    porHora[h].add(dk);
+    if(!porHora[h]) porHora[h] = {dias:new Set(), total:0, importados:0};
+    porHora[h].dias.add(dk);
+    porHora[h].total++;
+    if(e.imported) porHora[h].importados++;
   });
 
   const hojeD = new Date();
@@ -16152,7 +16289,8 @@ function computarCiclosHora(){
 
   const resultados = [];
   for(let h=0;h<24;h++){
-    const diaKeys = porHora[h];
+    const info = porHora[h];
+    const diaKeys = info && info.dias;
     if(!diaKeys || diaKeys.size<5) continue;
     const datas = Array.from(diaKeys).map(function(k){
       const p = k.split('-').map(Number);
@@ -16182,7 +16320,8 @@ function computarCiclosHora(){
       else if(diasDesde<=3){ status='Dentro da janela normal (2-3 dias)'; cor='#fbbf24'; ordem=1; }
       else { status='Atrasada há '+diasDesde+' dias (ciclo normal: 2-3)'; cor='#ef4444'; ordem=3; }
     }
-    resultados.push({h:h, tipo:tipo, cicloTxt:cicloTxt, diasDesde:diasDesde, status:status, cor:cor, ordem:ordem, nDias:diaKeys.size, datas:datas});
+    const pctImportado = info.total ? Math.round(100*info.importados/info.total) : 0;
+    resultados.push({h:h, tipo:tipo, cicloTxt:cicloTxt, diasDesde:diasDesde, status:status, cor:cor, ordem:ordem, nDias:diaKeys.size, datas:datas, pctImportado:pctImportado});
   }
   return resultados;
 }
@@ -18751,16 +18890,34 @@ function _sniperAlertar(urgencia){
   }catch(e){}
 }
 
+// Varre todas as chamadas e expira as que já passaram da janela de resposta sem
+// serem respondidas. Antes só corria quando se pedia uma chamada aberta (o que
+// deixava chamadas por resolver indefinidamente se a app não fosse consultada
+// a tempo); agora corre também sozinha, num intervalo, para o histórico não
+// acumular chamadas presas em resolved:false para sempre.
+function sniperExpirarAntigas(){
+  const agora = Date.now();
+  let mudou = false;
+  for(let i=0;i<sniperCalls.length;i++){
+    const c = sniperCalls[i];
+    if(!c.resolved && (agora-c.ts) > SNIPER_JANELA_RESPOSTA_MIN*60*1000){
+      c.resolved=true; c.resultado='expirado'; mudou = true;
+    }
+  }
+  if(mudou) saveSniperCalls();
+}
+setInterval(sniperExpirarAntigas, 60*1000);
+sniperExpirarAntigas();
+
 // Devolve a chamada aberta mais recente (ainda dentro da janela de resposta), ou null
 function sniperChamadaAberta(tipoFiltro){
+  sniperExpirarAntigas();
   const agora = Date.now();
   for(let i=0;i<sniperCalls.length;i++){
     const c = sniperCalls[i];
     if(!c.resolved && (agora-c.ts) <= SNIPER_JANELA_RESPOSTA_MIN*60*1000){
       if(!tipoFiltro || c.tipo===tipoFiltro) return c;
-      continue;
     }
-    if(!c.resolved) { c.resolved=true; c.resultado='expirado'; } // expira chamadas antigas nunca resolvidas
   }
   return null;
 }
@@ -18780,6 +18937,21 @@ function renderSniperPrecisao(){
   const streakArr=[]; for(let i=0;i<ultimas.length;i++){ streakArr.push(ultimas[i].resultado==='acerto'); }
   let streak=0; for(let i=0;i<streakArr.length;i++){ if(streakArr[i]) streak++; else break; }
 
+  const porUrg = {};
+  ultimas.forEach(function(c){
+    const u = c.urgencia||0;
+    if(!porUrg[u]) porUrg[u] = {n:0, ac:0};
+    porUrg[u].n++;
+    if(c.resultado==='acerto') porUrg[u].ac++;
+  });
+  const urgLabel = {2:'⚡ Nível 2 (Prepara)', 3:'🔴 Nível 3 (Entra Agora)', 4:'✨ Nível 4 (Janela de Ouro)'};
+  const urgHtml = Object.keys(porUrg).filter(function(u){return porUrg[u].n>=2;}).sort().map(function(u){
+    const info = porUrg[u];
+    const pctU = Math.round(100*info.ac/info.n);
+    return '<div style="display:flex;justify-content:space-between;font-size:0.42rem;color:var(--dim2);margin-top:2px;">'
+      +'<span>'+(urgLabel[u]||('Nível '+u))+'</span><span style="color:'+(pctU>=15?'var(--green)':'#fbbf24')+';">'+info.ac+'/'+info.n+' ('+pctU+'%)</span></div>';
+  }).join('');
+
   el.innerHTML = '<div style="display:flex;gap:8px;align-items:center;">'
     +'<div style="flex-shrink:0;width:56px;height:56px;border-radius:50%;border:3px solid '+cor+';display:flex;align-items:center;justify-content:center;font-family:var(--font-mono);font-weight:700;font-size:0.85rem;color:'+cor+';">'+pct+'%</div>'
     +'<div style="flex:1;">'
@@ -18787,7 +18959,8 @@ function renderSniperPrecisao(){
       +(streak>=2?'<div style="font-size:0.46rem;color:'+cor+';margin-top:2px;">🔥 '+streak+' acertos seguidos</div>':'')
       +'<div style="font-size:0.4rem;color:var(--dim2);margin-top:2px;">Total histórico: '+resolvidas.length+' chamadas respondidas</div>'
     +'</div>'
-    +'</div>';
+    +'</div>'
+    +(urgHtml?'<div style="margin-top:8px;border-top:1px solid var(--border);padding-top:6px;">'+urgHtml+'</div>':'');
 }
 
 function sniperResolverChamada(resultado, tipoFiltro){
@@ -19041,7 +19214,7 @@ function _sniperInstrucaoPara(tipo, scoreObj, arr, agora, agoraMin, ivMax){
   const nomeMaiusc = tipo==='quadra'?'QUADRA':'TRIPLO';
   const emoji = tipo==='quadra'?'\ud83d\udfe1':'\ud83d\udfe2';
 
-  let instrucao='', cor='#4ade80', urgencia=0;
+  let instrucao='', cor='#4ade80', urgencia=0, secaAtrasoProvavel=false;
   if(scoreObj.score>=70&&proxQuente&&proxQuente.off<=2){
     instrucao=emoji+' '+nomeMaiusc+': ENTRA AGORA \u2014 Score '+scoreObj.score+' + :'+pad(proxQuente.m)+' em '+proxQuente.off+'min. Condi\xe7\xf5es m\xe1ximas!';
     cor='#ef4444'; urgencia=3;
@@ -19087,7 +19260,15 @@ function _sniperInstrucaoPara(tipo, scoreObj, arr, agora, agoraMin, ivMax){
   // em esperas muito longas, por isso este aviso existe por fora do Score).
   // Só substitui a instrução quando isso não faria "descer" um nível já acionável
   // (Entra Agora / Janela de Ouro mantêm-se sempre por cima deste aviso).
-  if(tempoPassado!==null && avgIv!==null && avgIv>0 && urgencia<3){
+  // Teto de seca real: acima disto, uma "seca" deixa de ser plausível como fenómeno
+  // do jogo e passa a ser, com muito mais probabilidade, atraso de registo (screenshots
+  // por lançar). Confirmado nos dados: 95%+ dos alertas de seca prolongada ultrapassavam
+  // este valor, e a taxa de acerto desses casos era quase nula.
+  const LIMITE_SECA_REAL_MIN = 30;
+  if(tempoPassado!==null && tempoPassado>LIMITE_SECA_REAL_MIN && urgencia<3){
+    instrucao = '\u26a0\ufe0f '+tempoPassado+'min sem registar '+nomeMaiusc+' \u2014 acima do teto de seca real ('+LIMITE_SECA_REAL_MIN+'min). Prov\xe1vel atraso de registo, n\xe3o seca gen\xedna. Confirma se j\xe1 sa\xedram resultados por lan\xe7ar.';
+    cor = '#94a3b8'; urgencia = 1; secaAtrasoProvavel = true;
+  } else if(tempoPassado!==null && avgIv!==null && avgIv>0 && urgencia<3){
     const ratio = tempoPassado/avgIv;
     if(ratio>=1.8){
       const corSeca = ratio>=3 ? '#ef4444' : ratio>=2.2 ? '#dc2626' : '#f97316';
@@ -19128,7 +19309,7 @@ function _sniperInstrucaoPara(tipo, scoreObj, arr, agora, agoraMin, ivMax){
     cor = '#fde047'; urgencia = 4;
   }
 
-  return {instrucao, cor, urgencia, janelaDeOuro};
+  return {instrucao, cor, urgencia, janelaDeOuro, secaAtrasoProvavel};
 }
 
 function renderSniperInstrucao(){
@@ -19149,14 +19330,14 @@ function renderSniperInstrucao(){
   // vinda de um nível mais baixo — evita duplicar a mesma chamada a cada refresh de 5s.
   // O mesmo momento serve para disparar o alerta sonoro/vibração.
   if(rT.urgencia>=2 && _ultimaUrgenciaTriplo<2){
-    sniperCalls.unshift({ts:Date.now(),urgencia:rT.urgencia,cor:rT.cor,instrucao:rT.instrucao,tipo:'triplo',resolved:false,resultado:null});
+    sniperCalls.unshift({ts:Date.now(),urgencia:rT.urgencia,cor:rT.cor,instrucao:rT.instrucao,tipo:'triplo',resolved:false,resultado:null,atraso:!!rT.secaAtrasoProvavel});
     saveSniperCalls();
     _sniperAlertar(rT.urgencia);
     if(rT.urgencia>=3) falarAlerta('Atenção. Previsão forte de triplo. Score alto agora.');
   }
   _ultimaUrgenciaTriplo = rT.urgencia;
   if(rQ.urgencia>=2 && _ultimaUrgenciaQuadra<2){
-    sniperCalls.unshift({ts:Date.now(),urgencia:rQ.urgencia,cor:rQ.cor,instrucao:rQ.instrucao,tipo:'quadra',resolved:false,resultado:null});
+    sniperCalls.unshift({ts:Date.now(),urgencia:rQ.urgencia,cor:rQ.cor,instrucao:rQ.instrucao,tipo:'quadra',resolved:false,resultado:null,atraso:!!rQ.secaAtrasoProvavel});
     saveSniperCalls();
     _sniperAlertar(rQ.urgencia);
     if(rQ.urgencia>=3) falarAlerta('Atenção. Previsão forte de quadra. Score alto agora.');
@@ -19288,12 +19469,12 @@ window.sniperRegistar=function(tipo){
   // intervalo que addTriplo()/addQuadra() usam, para não deixar o intervalo a null)
   if(tipo==='triplo'){
     const prev=S.triplos[0];
-    const interval=prev?toMin(hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(hora,prev.hora):null;
     S.triplos.unshift({hora,num,ap:0,gn:0,interval,ts:Date.now()});
     save('triplos');
   } else if(tipo==='quadra'){
     const prev=S.quadras[0];
-    const interval=prev?toMin(hora)-toMin(prev.hora):null;
+    const interval=prev?calcIntervalMin(hora,prev.hora):null;
     S.quadras.unshift({hora,num,ap:0,gn:0,interval,ts:Date.now()});
     save('quadras');
     safeRun(mascoteCelebrar,'mascoteCelebrar-sniper');
