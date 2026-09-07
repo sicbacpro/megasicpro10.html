@@ -19260,11 +19260,12 @@ function _sniperInstrucaoPara(tipo, scoreObj, arr, agora, agoraMin, ivMax){
   // em esperas muito longas, por isso este aviso existe por fora do Score).
   // Só substitui a instrução quando isso não faria "descer" um nível já acionável
   // (Entra Agora / Janela de Ouro mantêm-se sempre por cima deste aviso).
-  // Teto de seca real: acima disto, uma "seca" deixa de ser plausível como fenómeno
-  // do jogo e passa a ser, com muito mais probabilidade, atraso de registo (screenshots
-  // por lançar). Confirmado nos dados: 95%+ dos alertas de seca prolongada ultrapassavam
-  // este valor, e a taxa de acerto desses casos era quase nula.
-  const LIMITE_SECA_REAL_MIN = 30;
+  // Teto de seca real, confirmado no histórico (percentis de intervalo real, horas 4h-23h):
+  // TRIPLO: p95=18min, p99=87min → passar de 50min é raro mas acontece; acima disso
+  // a probabilidade de ser atraso de registo (em vez de seca genuína) já é alta.
+  // QUADRA: p90=391min (6.5h), p95=556min (9.3h), p99=791min (13.2h) → secas de
+  // várias horas são NORMAIS neste tipo, por isso o teto tem de ser muito mais alto.
+  const LIMITE_SECA_REAL_MIN = tipo==='quadra' ? 720 : 50; // quadra: 12h · triplo: 50min
   if(tempoPassado!==null && tempoPassado>LIMITE_SECA_REAL_MIN && urgencia<3){
     instrucao = '\u26a0\ufe0f '+tempoPassado+'min sem registar '+nomeMaiusc+' \u2014 acima do teto de seca real ('+LIMITE_SECA_REAL_MIN+'min). Prov\xe1vel atraso de registo, n\xe3o seca gen\xedna. Confirma se j\xe1 sa\xedram resultados por lan\xe7ar.';
     cor = '#94a3b8'; urgencia = 1; secaAtrasoProvavel = true;
