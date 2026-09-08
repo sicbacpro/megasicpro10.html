@@ -3584,6 +3584,33 @@ function filtrarDuplicadosImport(lote, historicoExistente, chaveFn, janelaHistor
     return true;
   });
 }
+// Calcula, para uma hora do dia, se ela é consistentemente forte ao longo de várias
+// semanas (não só se tem muito volume total). Agrupa por semana (segunda-feira como
+// início), calcula que % dos registos de cada semana caiu nesta hora, e devolve a
+// média dessa % e o coeficiente de variação (CV = desvio/média — quanto menor, mais
+// estável). Só usa `ts` de registos NÃO importados, porque só esses têm timestamp
+// fiável (import antigo gravava a hora de importação, não a do evento).
+function _estabilidadeHora(arr, hora){
+  const porSemana = {};
+  arr.forEach(function(e){
+    if(!e.ts || !e.hora || e.imported) return;
+    const d = new Date(e.ts);
+    const diaSemana = (d.getDay()+6)%7; // 0=segunda
+    const seg = new Date(d.getFullYear(), d.getMonth(), d.getDate()-diaSemana);
+    const key = seg.getTime();
+    if(!porSemana[key]) porSemana[key] = {total:0, porHora:{}};
+    porSemana[key].total++;
+    const h = parseInt(e.hora.split(':')[0]);
+    porSemana[key].porHora[h] = (porSemana[key].porHora[h]||0)+1;
+  });
+  const semanas = Object.keys(porSemana).map(function(k){ return porSemana[k]; }).filter(function(s){ return s.total>=30; });
+  if(semanas.length<4) return null;
+  const pcts = semanas.map(function(s){ return 100*(s.porHora[hora]||0)/s.total; });
+  const media = pcts.reduce(function(a,b){return a+b;},0)/pcts.length;
+  const variancia = pcts.reduce(function(a,b){return a+(b-media)*(b-media);},0)/pcts.length;
+  const cv = media>0 ? Math.sqrt(variancia)/media : Infinity;
+  return {media:media, cv:cv, nSemanas:semanas.length};
+}
 const fromMin = m => { const v=(m%1440+1440)%1440; return `${pad(Math.floor(v/60))}:${pad(v%60)}`; };
 const nowMin = () => { const n=new Date(); return n.getHours()*60+n.getMinutes(); };
 const fmtR = v => 'R$'+Math.abs(v).toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -6624,9 +6651,20 @@ function calcTQScore(){
     const maxH = Math.max.apply(null,vals.concat([1]));
     const minH = Math.min.apply(null,vals.concat([0]));
     const thisH = porHora[horaAtual]||0;
-    const f2 = maxH>minH ? Math.round(((thisH-minH)/(maxH-minH))*100) : 50;
+    let f2 = maxH>minH ? Math.round(((thisH-minH)/(maxH-minH))*100) : 50;
+    // Bónus de estabilidade: só sobe o score se esta hora, além de ter volume,
+    // também se mostrar consistentemente forte semana após semana (CV baixo).
+    // Sem isto, uma hora que só teve um pico isolado numa semana pontuava igual
+    // a uma hora que é sempre forte — descoberto ao analisar 12 semanas de dados
+    // reais (11h e 17h destacaram-se assim, não só por volume).
+    const estab = _estabilidadeHora(triplosStats, horaAtual);
+    let estabTxt = '';
+    if(estab && estab.cv<=0.8 && estab.media>=(100/24)){
+      f2 = Math.min(100, f2+8);
+      estabTxt = ' · 📊 estável há '+estab.nSemanas+' semanas';
+    }
     score += f2*0.30;
-    fatores.push({label:'Hora '+horaAtual+'h',val:f2,desc:thisH+' triplos hist\xf3ricos nesta hora'});
+    fatores.push({label:'Hora '+horaAtual+'h',val:f2,desc:thisH+' triplos hist\xf3ricos nesta hora'+estabTxt});
   } else {
     score += 50*0.30;
     fatores.push({label:'Hora',val:50,desc:'Dados insuficientes'});
@@ -6785,9 +6823,15 @@ function calcQQScore(){
     const maxH = Math.max.apply(null,vals.concat([1]));
     const minH = Math.min.apply(null,vals.concat([0]));
     const thisH = porHora[horaAtual]||0;
-    const f2 = maxH>minH ? Math.round(((thisH-minH)/(maxH-minH))*100) : 50;
+    let f2 = maxH>minH ? Math.round(((thisH-minH)/(maxH-minH))*100) : 50;
+    const estab = _estabilidadeHora(arrStats, horaAtual);
+    let estabTxt = '';
+    if(estab && estab.cv<=0.8 && estab.media>=(100/24)){
+      f2 = Math.min(100, f2+8);
+      estabTxt = ' · 📊 estável há '+estab.nSemanas+' semanas';
+    }
     score += f2*0.30;
-    fatores.push({label:'Hora '+horaAtual+'h',val:f2,desc:thisH+' quadras hist\xf3ricas nesta hora'});
+    fatores.push({label:'Hora '+horaAtual+'h',val:f2,desc:thisH+' quadras hist\xf3ricas nesta hora'+estabTxt});
   } else {
     score += 50*0.30;
     fatores.push({label:'Hora',val:50,desc:'Dados insuficientes'});
@@ -12034,13 +12078,13 @@ function analisarIA(){
   const scores = {1:0,2:0,3:0,4:0,5:0,6:0};
   const fatores = [];
 
-  // ── FATOR 1: Frequência global (peso 20%)
+  // ── FATOR 1: Frequência global (peso 30% — subiu de 20%, é o sinal mais robusto que temos)
   const freqTotal = {1:0,2:0,3:0,4:0,5:0,6:0};
   arr.forEach(t=>freqTotal[t.num]=(freqTotal[t.num]||0)+1);
   const maxFreq = Math.max(...Object.values(freqTotal));
-  for(let n=1;n<=6;n++) scores[n] += (freqTotal[n]/maxFreq)*20;
+  for(let n=1;n<=6;n++) scores[n] += (freqTotal[n]/maxFreq)*30;
   const topFreq = Object.entries(freqTotal).sort((a,b)=>b[1]-a[1])[0];
-  fatores.push({icon:'📊', label:'Frequência Global', desc:`Nº ${topFreq[0]} mais frequente (${topFreq[1]}x)`, peso:'20%', cor:'var(--blue)'});
+  fatores.push({icon:'📊', label:'Frequência Global', desc:`Nº ${topFreq[0]} mais frequente (${topFreq[1]}x)`, peso:'30%', cor:'var(--blue)'});
 
   // ── FATOR 2: Frequência recente últimos 10 (peso 25%)
   const freq10 = {1:0,2:0,3:0,4:0,5:0,6:0};
@@ -12050,23 +12094,17 @@ function analisarIA(){
   const topF10 = Object.entries(freq10).sort((a,b)=>b[1]-a[1])[0];
   fatores.push({icon:'🕐', label:'Tendência Recente (ult.10)', desc:`Nº ${topF10[0]} domina recentemente (${topF10[1]}x)`, peso:'25%', cor:'var(--green)'});
 
-  // ── FATOR 3: Matriz de transição — o que vem depois de X (peso 30%)
-  const trans = {};
-  for(let i=0;i<arr.length-1;i++){
-    const from = arr[i+1].num; // anterior (mais antigo)
-    const to = arr[i].num;     // seguinte (mais recente)
-    if(!trans[from]) trans[from]={1:0,2:0,3:0,4:0,5:0,6:0};
-    trans[from][to]=(trans[from][to]||0)+1;
-  }
+  // ── FATOR 3: Repetição do último número (peso 8% — reduzido de 30%)
+  // Antes, este fator usava a matriz de transição completa (36 células) para prever
+  // "depois do nº X, vem o nº Y". Testámos isso com 10.640 transições reais e o
+  // resultado foi: nenhuma célula específica passou no teste estatístico, exceto
+  // uma coisa — o PRÓPRIO número repetir-se tem uma vantagem real, mas pequena
+  // (17.6% vs 16.7% esperado ao acaso, qui²=46, p≈0.006). Dar 30% de peso a um sinal
+  // que na prática era quase todo ruído estava a distorcer a previsão. Agora só se
+  // dá um pequeno bónus ao último número saído, do tamanho do efeito medido.
   const lastNum = arr[0].num;
-  if(trans[lastNum]){
-    const transMax = Math.max(...Object.values(trans[lastNum]),1);
-    for(let n=1;n<=6;n++) scores[n] += ((trans[lastNum][n]||0)/transMax)*30;
-    const topTrans = Object.entries(trans[lastNum]).sort((a,b)=>b[1]-a[1])[0];
-    fatores.push({icon:'🔗', label:'Sequência (após o nº '+lastNum+')', desc:`Após ${lastNum}, o nº ${topTrans[0]} aparece mais (${topTrans[1]}x)`, peso:'30%', cor:'var(--orange)'});
-  } else {
-    fatores.push({icon:'🔗', label:'Sequência', desc:'Dados insuficientes para transições', peso:'30%', cor:'var(--dim2)'});
-  }
+  for(let n=1;n<=6;n++) scores[n] += (n===lastNum ? 8 : 0);
+  fatores.push({icon:'🔗', label:'Repetição', desc:`Nº ${lastNum} (o último) tem leve vantagem estatística de se repetir (~+1pp medido)`, peso:'8%', cor:'var(--orange)'});
 
   // ── FATOR 4: Hora do dia (peso 15%)
   const horaAtual = new Date().getHours();
@@ -12078,13 +12116,18 @@ function analisarIA(){
   const topHora = Object.entries(freqHora).sort((a,b)=>b[1]-a[1])[0];
   fatores.push({icon:'🕰', label:`Hora Atual (${pad(horaAtual)}h ±1h)`, desc:topHora[1]>0?`Nº ${topHora[0]} mais frequente nesta hora (${topHora[1]}x)`:'Poucos dados nesta hora', peso:'15%', cor:'var(--gold)'});
 
-  // ── FATOR 5: Anti-streak — número que não aparece há mais tempo (peso 10%)
+  // ── FATOR 5: Anti-streak — REMOVIDO (peso 10% antes)
+  // Testei a hipótese "número ausente há mais tempo tem mais chance de sair" contra
+  // ~60 mil observações reais, em buckets de ausência (0-4, 5-9 ... 40+ posições).
+  // A % de sair ficou sempre entre 15-18%, sem tendência a subir com a ausência —
+  // e a cauda (ausência 40+) desceu, não subiu. É a falácia do jogador clássica, sem
+  // suporte nos teus dados. Removido em vez de mantido com peso reduzido, porque não
+  // há nenhuma direção a favorecer — dar-lhe qualquer peso, mesmo pequeno, seria
+  // inventar sinal onde não há.
   const ultimaVez = {1:999,2:999,3:999,4:999,5:999,6:999};
   arr.forEach((t,i)=>{ if(ultimaVez[t.num]===999) ultimaVez[t.num]=i; });
-  const maxAusencia = Math.max(...Object.values(ultimaVez));
-  for(let n=1;n<=6;n++) scores[n] += (ultimaVez[n]/maxAusencia)*10;
   const maisAusente = Object.entries(ultimaVez).sort((a,b)=>b[1]-a[1])[0];
-  fatores.push({icon:'⏳', label:'Ausência (due factor)', desc:`Nº ${maisAusente[0]} ausente há ${maisAusente[1]} triplos`, peso:'10%', cor:'var(--cyan)'});
+  fatores.push({icon:'⏳', label:'Ausência', desc:`Nº ${maisAusente[0]} ausente há ${maisAusente[1]} triplos — testado e sem efeito real, não conta para o score`, peso:'0%', cor:'var(--dim2)'});
 
   // Normalizar scores para 0-100
   const maxScore = Math.max(...Object.values(scores));
